@@ -7,6 +7,14 @@
  * SPDX-License-Identifier: (Apache-2.0 OR GPL-2.0-only)
  */
 
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <memory>
+#include <array>
+#include <set>
+#include <filesystem>
+
 #include <netinet/in.h>
 
 #include <resolv.h>
@@ -22,6 +30,66 @@ namespace osquery {
 namespace tables {
 
 QueryData genDNSResolversImpl(QueryContext& context, Logger& logger) {
+  QueryData results;
+  int id = 0;
+
+  // The global structure is called "_res" and is of the semi-opaque type
+  // struct __res_state from the same resolv.h. An application many communicate
+  // with the resolver discovery, but we are interested in the default state.
+
+  // Attempt to get resolvers from /etc/resolv.conf
+  std::ifstream resolv_conf("/etc/resolv.conf");
+    
+  if (resolv_conf.is_open()) {
+      std::string line;
+      while (std::getline(resolv_conf, line)) {
+          if (line.substr(0, 10) == "nameserver") {
+              size_t pos = line.find_first_not_of(" \t", 10);
+              if (pos != std::string::npos) {
+                  std::string ip = line.substr(pos);
+                  // Trim whitespace
+                  ip.erase(ip.find_last_not_of(" \t\n\r") + 1);
+                  if (ip != "127.0.0.53") { // Skip systemd-resolved stub listener
+                      Row r;
+                      r["id"] = id;
+                      id++;
+                      r["type"] = "nameserver";
+                      r["address"] = ip;
+                      r["netmask"] = "32";
+                      results.push_back(r);
+                  }
+              }
+          }
+      }
+      resolv_conf.close();
+
+  }
+  std::array<char, 128> buffer;
+  std::unique_ptr<FILE, decltype(&pclose)> pipe(popen("which nmcli >/dev/null 2>&1 && nmcli dev show | grep 'IP4.DNS'", "r"), pclose);
+  
+  if (pipe) {
+      while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+          std::string line(buffer.data());
+          size_t pos = line.find(':');
+          if (pos != std::string::npos) {
+              std::string ip = line.substr(pos + 1);
+              // Trim whitespace
+              ip.erase(0, ip.find_first_not_of(" \t\n\r"));
+              ip.erase(ip.find_last_not_of(" \t\n\r") + 1);
+              Row r;
+              r["id"] = id;
+              id++;
+              r["type"] = "nameserver";
+              r["address"] = ip;
+              r["netmask"] = "32";
+              results.push_back(r);
+          }
+      }
+  }
+
+  return results;
+}
+QueryData genDNSResolversImpl2(QueryContext& context, Logger& logger) {
   QueryData results;
 
   // libresolv will populate a global structure with resolver information.
